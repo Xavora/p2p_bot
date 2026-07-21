@@ -9,11 +9,11 @@ class P2PDataFetcher:
 
         # Bybit API URL для P2P
         url = "https://api2.bybit.com/fiat/otc/item/online"
-        
+
         # trade_type: якщо користувач хоче КУПИТИ (BUY), ми шукаємо оголошення продавців (1)
         # якщо ПРОДАТИ (SELL), ми шукаємо оголошення покупців (0)
         side = "1" if trade_type == "BUY" else "0"
-        
+
         # Тіло запиту (POST payload)
         payload = {
             "userId": "",
@@ -27,7 +27,7 @@ class P2PDataFetcher:
             "authMaker": False,
             "canTrade": False
         }
-        
+
         # Заголовки, щоб біржа думала, що ми звичайний браузер
         headers = {
             "Content-Type": "application/json",
@@ -35,7 +35,7 @@ class P2PDataFetcher:
         }
 
         orders = []
-        
+
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=payload, headers=headers) as response:
@@ -43,7 +43,7 @@ class P2PDataFetcher:
                         data = await response.json()
                         # Парсимо JSON відповідь від Bybit
                         items = data.get("result", {}).get("items", [])
-                        
+
                         for item in items:
                             orders.append({
                                 "price": float(item["price"]),
@@ -52,10 +52,32 @@ class P2PDataFetcher:
                                 "completion_rate": float(item["recentExecuteRate"]),
                                 "min_amount": float(item["minQuoteInToken"]) # Мінімальна сума в крипті або фіаті
                             })
-                            
+
         except Exception as e:
             print(f"Помилка парсингу Bybit: {e}")
-            
+
         return orders
 
-    # ... (інші методи get_filtered_top_10 та get_average_course залишаються без змін)
+    @staticmethod
+    async def get_filtered_top_10(exchange: str, trade_type: str) -> list:
+        """Топ-10 оголошень після анти-скам фільтрів, відсортовані за вигідністю ціни."""
+        orders = await P2PDataFetcher.fetch_order_book(exchange, trade_type)
+
+        filtered = [
+            o for o in orders
+            if o["completion_rate"] >= MIN_COMPLETION_RATE
+            and o["orders_count"] >= MIN_ORDERS
+            and o["min_amount"] <= MIN_AMOUNT
+        ]
+
+        # Купуємо — шукаємо найдешевших продавців; продаємо — найдорожчих покупців
+        filtered.sort(key=lambda o: o["price"], reverse=(trade_type == "SELL"))
+        return filtered[:10]
+
+    @staticmethod
+    async def get_average_course(exchange: str, trade_type: str) -> float:
+        """Середня ціна по топ-10 відфільтрованих оголошень (0.0, якщо даних немає)."""
+        top_orders = await P2PDataFetcher.get_filtered_top_10(exchange, trade_type)
+        if not top_orders:
+            return 0.0
+        return sum(o["price"] for o in top_orders) / len(top_orders)
